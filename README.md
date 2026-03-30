@@ -11,6 +11,7 @@ _"Tell me and I forget. Teach me and I remember. Involve me and I learn." – Be
 > Creating a website using GitHub Pages is simple and a great way to present your project.
 
 This page is written in Markdown.
+- Click the [assignment link](https://classroom.github.com/a/FxAEmrI0) to accept your assignment.
 
 ---
 
