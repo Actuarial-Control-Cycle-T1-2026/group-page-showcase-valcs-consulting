@@ -15,6 +15,10 @@ We are members of the actuarial team at Galazy General Insurance Company, one of
 ---
 # Loss frequency and severity modelling
 
+**Frequency Modelling**
+
+A Negative Binomial GLM was selected as the frequency model across all product lines. Claim counts are discrete, non-negative, and preliminary exploratory data analysis indicated variability that violates the Poisson assumption. Given the concentration of policies with zero claims, a Zero-Inflated Negative Binomial model was initially considered to explicitly account for the excess zeros. However, the EDA revealed that the zero counts do not arise from a separate process, such as deductible thresholds. Consequently, the standard Negative Binomial was preferred, as it accommodates overdispersion while maintaining interpretability.
+
 ---
 # Capital Modelling
 
