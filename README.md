@@ -6,7 +6,7 @@ By Alan Steny, Carol Zhang, Liya Ruan, Sarina Truong & Vihaan Jain
 ---
 # Objective Overview
 
-We are members of the actuarial team at Galazy General Insurance Company, one of the leading insurance companies across the interstellar expanse in 2075. The objective of this is to develop a successful response to a request for proposals (RFP) from Cosmic Quarry Mining Corporation who is seeking space mining insurance coverage for their expanding operation. This report analyses the associated risk and provide recommendations regarding the following products: equipment failure, cargo loss, workers’ compensation, and business interruption.
+We are members of the actuarial team at Galaxy General Insurance Company, one of the leading insurance companies across the interstellar expanse in 2075. The objective of this is to develop a successful response to a request for proposals (RFP) from Cosmic Quarry Mining Corporation who is seeking space mining insurance coverage for their expanding operation. This report analyses the associated risk and provide recommendations regarding the following products: equipment failure, cargo loss, workers’ compensation, and business interruption.
 
 ---
 # Data
