@@ -22,6 +22,7 @@ A Negative Binomial GLM was selected as the frequency model across all product l
 **Severity Modelling**
 
 The R Code for each product line can be accessed below:
+
 [Equipment Failure](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Equipment%20Failure.R)
 
 ---
