@@ -35,6 +35,12 @@ The R Code for each product line can be accessed below:
 ---
 # Capital Modelling
 
+The capital model for Cosmic Quarry’s portfolio is projected across a 2175 - 2185 window using 10,000 bootstrapped simulations for each product line. The simulations were then stress tested under 11 stress testing scenarios and are mapped across 3 capital requirements (100%, 150%, 200% SCR). In addition, the model incorporates a 40% quota share reinsurance structure with a 25% ceding commission returned to the insurer.
+
+**Code**
+
+The code for the capital model can be accessed below:
+
 ---
 # Risk assessment
 
