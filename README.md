@@ -27,7 +27,7 @@ A Negative Binomial GLM was selected as the frequency model across all product l
 The R Code for each product line can be accessed below:
 
 [Equipment Failure](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Equipment%20Failure.R)
-[Cargo Loss 01 - Severity Model](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Cargo%20Loss%2003%20-%20Severity%20Model.R)
+[Cargo Loss](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Cargo%20Loss%2003%20-%20Severity%20Model.R)
 
 ---
 # Capital Modelling
