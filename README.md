@@ -51,6 +51,7 @@ Benefit structure: Galaxy General will pay for the cost to restore the machine t
 Exclusions: Galaxy General will not cover any events outside the defined benefit structure, namely any equipment breakdowns resulting from causes that are not sudden and unforeseen.
 
 **Cargo Loss**
+
 While Cargo Loss represents a significant operational risk for Cosmic Quarry Mining Corporation, our analysis indicates that offering cargo loss insurance is not currently commercially viable for Galaxy General. The transport of extremely high-value metals such as gold and platinum creates severe loss potential, requiring substantial capital and resulting in premiums that would likely be unsustainable for the client. Reducing premiums to make coverage affordable is not viable as this would expose the Galaxy General to losses that are not adequately compensated by premium. 
 
 Accordingly, we do not recommend introducing a cargo loss product. However, if the value concentration of transported metals decrease in the future, or if market conditions allow risks to become more diversifiable and predictable, Galaxy General may reconsider offering cargo loss coverage.
