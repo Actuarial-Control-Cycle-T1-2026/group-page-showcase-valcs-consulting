@@ -46,6 +46,10 @@ The R Code for each product line can be accessed below:
 
 [Cargo Loss - Frequency Model](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Cargo%20Loss%2004%20-%20Frequency%20Model.R)
 
+[Business Interruption](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Business%20Interruption%2003_model_selection.py)
+
+
+
 ---
 # Capital Modelling
 
