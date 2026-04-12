@@ -1,0 +1,1411 @@
+"""
+CAPITAL MODEL v6 — LAPSE-ADJUSTED GROWTH + REINSURANCE + EXPLICIT WC STRESS
+SOA 2026 Student Research Case Study | Cosmic Quarry Mining Corporation
+
+NEW IN v6
+========================================================================
+1. Adds an explicit Workers Compensation stress test
+   - WC losses can now be stressed separately from the rest of the portfolio
+   - This fixes the earlier issue where WC was only stressed implicitly through
+     overall portfolio shocks
+
+2. Retains all v5 features
+   - annual lapse assumption
+   - gross growth calibrated so net in-force growth still reaches:
+       Helionis = +25%
+       Bayesia  = +25%
+       Oryn     = +15%
+   - quota share reinsurance
+   - portfolio reporting for 2176, 2180, 2185
+   - 10-year cashflow
+   - discounted profitability value
+
+3. Adds a dedicated Workers Compensation scenario
+   - "Workers_Comp_Shock"
+   - WC losses increase by 40% from year 3 onward across all systems
+   - designed to represent persistent injury frequency / severity deterioration
+
+Interpretation
+========================================================================
+- Reinsurance reduces retained volatility and capital needs
+- Lapse is explicitly modelled but gross written growth is calibrated so net
+  exposure still hits the original 10-year growth targets
+- Workers Compensation is now stress-tested directly rather than only through
+  general system shocks
+========================================================================
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.ticker import FuncFormatter
+from pathlib import Path
+import warnings
+
+warnings.filterwarnings("ignore")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# A) FILE PATHS
+# ══════════════════════════════════════════════════════════════════════════════
+
+BASE = Path("/Users/alansteny/Downloads/SOA_2026_Case_Study_Materials")
+
+PATHS = {
+    "wc": BASE / "Workers Compensation/aggregate_losses_by_solar_system.xlsx",
+    "equipment": BASE / "Equipment Failure/eq_agg_loss_by_system_2175.xlsx",
+    "bi": BASE / "Business Interruption/FINAL/Excel Output/bi_agg_loss_by_system_2175.xlsx",
+    "cargo": BASE / "Cargo Loss/aggregate_losses_limited_by_system.xlsx",
+    "rates": BASE / "0. Original Case Material/srcsc-2026-interest-and-inflation.xlsx",
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B) CONSTANTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+N_PROJ = 10
+VALUATION_YR = 2175
+OP_EXP_RATIO = 0.25
+CLAIMS_EXP_RATIO = 0.12
+COC_RATE = 0.12
+CAPITAL_P = 0.995
+SURPLUS_DIST = 0.25
+QUOTA_SHARE = 0.40
+CEDING_COMM = 0.25
+MKT_PRICE_FACTOR = 1.00
+
+SOLAR_GROWTH_TOTAL = {
+    "Helionis Cluster": 0.25,
+    "Bayesia System": 0.25,
+    "Oryn Delta": 0.15,
+}
+
+CAPITAL_TARGETS = [2.00, 1.50, 1.00]
+CAPITAL_TARGET_LABELS = {
+    2.00: "200% SCR (Well-capitalised)",
+    1.50: "150% SCR (Adequate)",
+    1.00: "100% SCR (Regulatory min)",
+}
+
+RNG_SEED = 42
+
+# Recapitalisation settings
+RECAPITALISE = True
+RECAP_TRIGGER = 0.00
+RECAP_TARGET = 1.00
+MAX_RECAPS_PER_PATH = 1
+
+# Lapse assumption
+LAPSE_RATE = 0.03
+
+# Reporting years requested
+REPORT_YEARS = [2176, 2180, 2185]
+
+# Dedicated WC stress assumption
+WC_STRESS_MULT = 1.40
+WC_STRESS_START_YEAR = 3
+
+# ══════════════════════════════════════════════════════════════════════════════
+# C) DATA LOADING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_inputs(paths: dict) -> dict:
+    wc_df = pd.read_excel(paths["wc"])
+    eq_df = pd.read_excel(paths["equipment"])
+    bi_df = pd.read_excel(paths["bi"])
+    cg_df = pd.read_excel(paths["cargo"])
+    rates_raw = (
+        pd.read_excel(
+            paths["rates"],
+            sheet_name="Sheet1",
+            skiprows=2,
+            header=None,
+            names=["year", "inflation", "overnight", "spot_1y", "spot_10y"],
+        )
+        .apply(pd.to_numeric, errors="coerce")
+        .dropna(subset=["year", "inflation"])
+    )
+    return {
+        "cargo_H": cg_df["Helionis Cluster"].values.astype(float),
+        "cargo_B": cg_df["Bayesia System"].values.astype(float),
+        "cargo_O": cg_df["Oryn Delta"].values.astype(float),
+        "equip_H": eq_df["Helionis Cluster"].values.astype(float),
+        "equip_B": eq_df["Bayesia System"].values.astype(float),
+        "equip_O": eq_df["Oryn Delta"].values.astype(float),
+        "wc_H": wc_df["agg_wc_h"].values.astype(float),
+        "wc_B": wc_df["agg_wc_e"].values.astype(float),
+        "wc_O": wc_df["agg_wc_o"].values.astype(float),
+        "bi_H": bi_df["Helionis Cluster"].values.astype(float),
+        "bi_B": bi_df["Bayesia System"].values.astype(float),
+        "bi_O": bi_df["Oryn Delta"].values.astype(float),
+        "rates": rates_raw,
+    }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# D) RATE TERM STRUCTURE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def build_rate_structure(rates_raw: pd.DataFrame, n_proj: int = N_PROJ) -> dict:
+    avg3 = rates_raw.tail(3)[["inflation", "spot_1y", "spot_10y"]].mean()
+    avg5 = rates_raw.tail(5)[["inflation", "spot_1y", "spot_10y"]].mean()
+    avgA = rates_raw[["inflation", "spot_1y", "spot_10y"]].mean()
+
+    def get_rates(t):
+        if t <= 2:
+            return avg3["inflation"], avg3["spot_1y"]
+        elif t <= 5:
+            return avg5["inflation"], avg5["spot_1y"]
+        else:
+            return avgA["inflation"], avgA["spot_10y"]
+
+    claims_inf = np.array([get_rates(t)[0] for t in range(1, n_proj + 1)])
+    disc_rates = np.array([get_rates(t)[1] for t in range(1, n_proj + 1)])
+
+    return {
+        "claims_inf": claims_inf,
+        "prem_inf": claims_inf.copy(),
+        "invest_ret": disc_rates,
+        "cum_inf": np.cumprod(1 + claims_inf),
+        "cum_disc": np.cumprod(1 / (1 + disc_rates)),
+    }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# E) ACTUARIAL FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def calc_required_capital(loss_vec: np.ndarray, p: float = CAPITAL_P) -> float:
+    """VaR(p) - E[L]."""
+    if len(loss_vec) == 0:
+        return 0.0
+    return float(np.quantile(loss_vec, p) - np.mean(loss_vec))
+
+def tvar(loss_vec: np.ndarray, p: float = CAPITAL_P) -> float:
+    if len(loss_vec) == 0:
+        return 0.0
+    q = np.quantile(loss_vec, p)
+    tail = loss_vec[loss_vec > q]
+    return float(np.mean(tail)) if len(tail) > 0 else float(q)
+
+def calc_premium_coc(
+    loss_vec,
+    line,
+    system,
+    op_exp=OP_EXP_RATIO,
+    cl_exp=CLAIMS_EXP_RATIO,
+    coc=COC_RATE,
+    p=CAPITAL_P,
+    mkt=MKT_PRICE_FACTOR,
+):
+    el = float(np.mean(loss_vec))
+    req_cap = calc_required_capital(loss_vec, p)
+    var995 = float(np.quantile(loss_vec, p))
+    tvar995 = tvar(loss_vec, p)
+    risk_mgn = coc * req_cap
+    tech_p = (el * (1 + cl_exp) + risk_mgn) / (1 - op_exp)
+    gross_p = tech_p * mkt
+    uw_mgn = gross_p - el - op_exp * gross_p - cl_exp * el
+    return {
+        "line": line,
+        "solar_system": system,
+        "expected_loss": el,
+        "var_995": var995,
+        "tvar_995": tvar995,
+        "required_capital": req_cap,
+        "risk_margin": risk_mgn,
+        "technical_premium": tech_p,
+        "gross_premium": gross_p,
+        "loss_ratio": el / gross_p if gross_p > 0 else np.nan,
+        "combined_ratio": (el * (1 + cl_exp) + gross_p * op_exp) / gross_p if gross_p > 0 else np.nan,
+        "uw_margin": uw_mgn,
+    }
+
+def solve_gross_growth_from_net_target(total_net_growth: float, lapse_rate: float, n_proj: int = N_PROJ) -> tuple[float, float]:
+    """
+    Solve annual net and gross growth rates so that:
+        ((1 + gross_growth) * (1 - lapse_rate)) ** n_proj = 1 + total_net_growth
+    """
+    annual_net_growth = (1 + total_net_growth) ** (1 / n_proj) - 1
+    annual_gross_growth = ((1 + annual_net_growth) / (1 - lapse_rate)) - 1
+    return annual_net_growth, annual_gross_growth
+
+# ══════════════════════════════════════════════════════════════════════════════
+# F) MAIN CAPITAL PROJECTION — RECAPITALISATION + WIND-UP + LAPSE + WC STRESS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_capital_projection(
+    losses,
+    premiums,
+    growth,
+    rates,
+    scenario_name,
+    capital_multiple=1.00,
+    stress_H=None,
+    stress_B=None,
+    stress_O=None,
+    stress_wc_H=None,
+    stress_wc_B=None,
+    stress_wc_O=None,
+    n_proj=N_PROJ,
+    valuation_yr=VALUATION_YR,
+    op_exp=OP_EXP_RATIO,
+    cl_exp=CLAIMS_EXP_RATIO,
+    capital_p=CAPITAL_P,
+    surplus_dist=SURPLUS_DIST,
+    recapitalise=RECAPITALISE,
+    recap_trigger=RECAP_TRIGGER,
+    recap_target=RECAP_TARGET,
+    max_recaps_per_path=MAX_RECAPS_PER_PATH,
+    lapse_rate=LAPSE_RATE,
+    quota_share=QUOTA_SHARE,
+    ceding_comm=CEDING_COMM,
+) -> dict:
+
+    n_sim = len(losses["H"])
+    if stress_H is None:
+        stress_H = np.ones(n_proj)
+    if stress_B is None:
+        stress_B = np.ones(n_proj)
+    if stress_O is None:
+        stress_O = np.ones(n_proj)
+    if stress_wc_H is None:
+        stress_wc_H = np.ones(n_proj)
+    if stress_wc_B is None:
+        stress_wc_B = np.ones(n_proj)
+    if stress_wc_O is None:
+        stress_wc_O = np.ones(n_proj)
+
+    rng = np.random.default_rng(RNG_SEED)
+
+    claims_inf = rates["claims_inf"]
+    prem_inf = rates["prem_inf"]
+    invest_ret = rates["invest_ret"]
+
+    cum_inf = np.cumprod(1 + claims_inf)
+    cum_prem = np.cumprod(1 + prem_inf)
+
+    gross_g_H = growth["H"]
+    gross_g_B = growth["B"]
+    gross_g_O = growth["O"]
+
+    net_mult_H = (1 + gross_g_H) * (1 - lapse_rate)
+    net_mult_B = (1 + gross_g_B) * (1 - lapse_rate)
+    net_mult_O = (1 + gross_g_O) * (1 - lapse_rate)
+
+    cum_g_H = net_mult_H ** np.arange(1, n_proj + 1)
+    cum_g_B = net_mult_B ** np.arange(1, n_proj + 1)
+    cum_g_O = net_mult_O ** np.arange(1, n_proj + 1)
+
+    idx0 = [rng.choice(n_sim, n_sim, replace=True) for _ in range(3)]
+
+    other_loss_yr0 = (
+        losses["nonwc_H"][idx0[0]] * cum_g_H[0] * cum_inf[0] * stress_H[0] +
+        losses["nonwc_B"][idx0[1]] * cum_g_B[0] * cum_inf[0] * stress_B[0] +
+        losses["nonwc_O"][idx0[2]] * cum_g_O[0] * cum_inf[0] * stress_O[0]
+    )
+    wc_loss_yr0 = (
+        losses["wc_H"][idx0[0]] * cum_g_H[0] * cum_inf[0] * stress_wc_H[0] +
+        losses["wc_B"][idx0[1]] * cum_g_B[0] * cum_inf[0] * stress_wc_B[0] +
+        losses["wc_O"][idx0[2]] * cum_g_O[0] * cum_inf[0] * stress_wc_O[0]
+    )
+    loss_yr0 = other_loss_yr0 + wc_loss_yr0
+
+    req_cap_yr1 = calc_required_capital(loss_yr0, capital_p)
+    opening_capital = capital_multiple * req_cap_yr1
+
+    capital_mat = np.full((n_sim, n_proj + 1), np.nan)
+
+    gross_loss_mat = np.full((n_sim, n_proj), np.nan)
+    net_loss_mat = np.full((n_sim, n_proj), np.nan)
+
+    gross_prem_mat = np.full((n_sim, n_proj), np.nan)
+    net_prem_mat = np.full((n_sim, n_proj), np.nan)
+
+    ceded_prem_mat = np.full((n_sim, n_proj), np.nan)
+    ceding_comm_mat = np.full((n_sim, n_proj), np.nan)
+    reins_recovery_mat = np.full((n_sim, n_proj), np.nan)
+
+    uw_mat = np.full((n_sim, n_proj), np.nan)
+    inv_mat = np.full((n_sim, n_proj), np.nan)
+    total_result_mat = np.full((n_sim, n_proj), np.nan)
+
+    div_mat = np.zeros((n_sim, n_proj))
+    recap_mat = np.zeros((n_sim, n_proj))
+    req_cap_vec = np.zeros(n_proj)
+    recap_count = np.zeros(n_sim, dtype=int)
+
+    capital_mat[:, 0] = opening_capital
+
+    for t in range(n_proj):
+        if t == 0:
+            idx_H, idx_B, idx_O = idx0
+        else:
+            idx_H = rng.choice(n_sim, n_sim, replace=True)
+            idx_B = rng.choice(n_sim, n_sim, replace=True)
+            idx_O = rng.choice(n_sim, n_sim, replace=True)
+
+        alive = capital_mat[:, t] > 0
+
+        gross_other_loss_H = losses["nonwc_H"][idx_H] * cum_g_H[t] * cum_inf[t] * stress_H[t]
+        gross_other_loss_B = losses["nonwc_B"][idx_B] * cum_g_B[t] * cum_inf[t] * stress_B[t]
+        gross_other_loss_O = losses["nonwc_O"][idx_O] * cum_g_O[t] * cum_inf[t] * stress_O[t]
+
+        gross_wc_loss_H = losses["wc_H"][idx_H] * cum_g_H[t] * cum_inf[t] * stress_wc_H[t]
+        gross_wc_loss_B = losses["wc_B"][idx_B] * cum_g_B[t] * cum_inf[t] * stress_wc_B[t]
+        gross_wc_loss_O = losses["wc_O"][idx_O] * cum_g_O[t] * cum_inf[t] * stress_wc_O[t]
+
+        gross_loss_t = (
+            gross_other_loss_H + gross_other_loss_B + gross_other_loss_O +
+            gross_wc_loss_H + gross_wc_loss_B + gross_wc_loss_O
+        ) * alive
+
+        gross_prem_t = (
+            premiums["H"] * cum_g_H[t] * cum_prem[t] +
+            premiums["B"] * cum_g_B[t] * cum_prem[t] +
+            premiums["O"] * cum_g_O[t] * cum_prem[t]
+        ) * alive
+
+        ceded_prem_t = gross_prem_t * quota_share
+        ceding_comm_t = ceded_prem_t * ceding_comm
+        net_prem_t = gross_prem_t - ceded_prem_t + ceding_comm_t
+
+        reinsurance_recovery_t = gross_loss_t * quota_share
+        net_loss_t = gross_loss_t - reinsurance_recovery_t
+
+        req_cap_t = calc_required_capital(net_loss_t[alive], capital_p) if alive.any() else 0.0
+        req_cap_vec[t] = req_cap_t
+
+        operating_exp_t = op_exp * gross_prem_t
+        claims_exp_t = cl_exp * net_loss_t
+
+        invest_t = capital_mat[:, t] * invest_ret[t] * alive
+        uw_t = net_prem_t - net_loss_t - operating_exp_t - claims_exp_t
+        total_result_t = uw_t + invest_t
+        cap_pre = capital_mat[:, t] + total_result_t
+
+        surplus = np.where(alive, np.maximum(cap_pre - 1.5 * req_cap_t, 0), 0.0)
+        dist_t = surplus * surplus_dist
+        cap_post = np.where(alive, cap_pre - dist_t, 0.0)
+
+        recap_t = np.zeros(n_sim)
+        if recapitalise and req_cap_t > 0:
+            trigger_level = recap_trigger * req_cap_t
+            target_level = recap_target * req_cap_t
+
+            need_recap = (
+                alive &
+                (cap_post < trigger_level) &
+                (recap_count < max_recaps_per_path)
+            )
+
+            recap_t[need_recap] = np.maximum(target_level - cap_post[need_recap], 0.0)
+            cap_post[need_recap] += recap_t[need_recap]
+            recap_count[need_recap] += 1
+
+        cap_post = np.where(cap_post > 0, cap_post, 0.0)
+
+        gross_loss_mat[:, t] = gross_loss_t
+        net_loss_mat[:, t] = net_loss_t
+        gross_prem_mat[:, t] = gross_prem_t
+        net_prem_mat[:, t] = net_prem_t
+        ceded_prem_mat[:, t] = ceded_prem_t
+        ceding_comm_mat[:, t] = ceding_comm_t
+        reins_recovery_mat[:, t] = reinsurance_recovery_t
+
+        uw_mat[:, t] = uw_t
+        inv_mat[:, t] = invest_t
+        total_result_mat[:, t] = total_result_t
+        div_mat[:, t] = dist_t
+        recap_mat[:, t] = recap_t
+        capital_mat[:, t + 1] = cap_post
+
+    rows = []
+    for t in range(n_proj):
+        cap_start = capital_mat[:, t]
+        cap_end = capital_mat[:, t + 1]
+        gross_loss_col = gross_loss_mat[:, t]
+        net_loss_col = net_loss_mat[:, t]
+        gross_prem_col = gross_prem_mat[:, t]
+        net_prem_col = net_prem_mat[:, t]
+        ceded_prem_col = ceded_prem_mat[:, t]
+        ceding_comm_col = ceding_comm_mat[:, t]
+        reins_recovery_col = reins_recovery_mat[:, t]
+        uw_col = uw_mat[:, t]
+        inv_col = inv_mat[:, t]
+        total_result_col = total_result_mat[:, t]
+        rq = req_cap_vec[t]
+
+        live_end = cap_end > 0
+        solvency = float(np.mean(cap_end[live_end])) / rq if rq > 0 and live_end.any() else 0.0
+
+        prob_ruin = float(np.mean(capital_mat[:, t + 1] <= 0))
+        prob_recap = float(np.mean(recap_mat[:, :t + 1].sum(axis=1) > 0))
+        mean_recap = float(np.mean(recap_mat[:, t]))
+        total_recap_to_date = float(np.mean(recap_mat[:, :t + 1].sum(axis=1)))
+
+        mean_gross_prem = float(np.mean(gross_prem_col))
+        mean_net_prem = float(np.mean(net_prem_col))
+        mean_ceded_prem = float(np.mean(ceded_prem_col))
+        mean_ceding_comm = float(np.mean(ceding_comm_col))
+
+        mean_gross_loss = float(np.mean(gross_loss_col))
+        mean_net_loss = float(np.mean(net_loss_col))
+        mean_reins_recovery = float(np.mean(reins_recovery_col))
+        mean_uw = float(np.mean(uw_col))
+        mean_inv = float(np.mean(inv_col))
+        mean_total = float(np.mean(total_result_col))
+
+        loss_ratio = mean_net_loss / mean_net_prem if mean_net_prem > 0 else np.nan
+        combined_ratio = (
+            (mean_net_loss + cl_exp * mean_net_loss + op_exp * mean_gross_prem) / mean_net_prem
+            if mean_net_prem > 0 else np.nan
+        )
+
+        rows.append({
+            "scenario": scenario_name,
+            "capital_multiple": capital_multiple,
+            "year": valuation_yr + t + 1,
+            "t": t + 1,
+
+            "mean_gross_premium": mean_gross_prem,
+            "mean_ceded_premium": mean_ceded_prem,
+            "mean_ceding_commission": mean_ceding_comm,
+            "mean_net_premium": mean_net_prem,
+
+            "mean_gross_loss": mean_gross_loss,
+            "mean_reinsurance_recovery": mean_reins_recovery,
+            "mean_net_loss": mean_net_loss,
+
+            "mean_uw_result": mean_uw,
+            "mean_invest_income": mean_inv,
+            "mean_total_return": mean_total,
+
+            "expected_cost": mean_net_loss,
+            "expected_net_revenue": mean_uw,
+            "expected_total_return": mean_total,
+
+            "variance_loss": float(np.var(net_loss_col, ddof=1)),
+            "std_loss": float(np.std(net_loss_col, ddof=1)),
+            "variance_net_revenue": float(np.var(uw_col, ddof=1)),
+            "variance_total_return": float(np.var(total_result_col, ddof=1)),
+
+            "p90_loss": float(np.percentile(net_loss_col, 90)),
+            "p95_loss": float(np.percentile(net_loss_col, 95)),
+            "p99_loss": float(np.percentile(net_loss_col, 99)),
+            "p995_loss": float(np.percentile(net_loss_col, 99.5)),
+            "tvar_95_loss": tvar(net_loss_col, 0.95),
+            "tvar_99_5_loss": tvar(net_loss_col, capital_p),
+
+            "p05_total_return": float(np.percentile(total_result_col, 5)),
+            "p01_total_return": float(np.percentile(total_result_col, 1)),
+
+            "mean_surplus_dist": float(np.mean(div_mat[:, t])),
+            "mean_recapitalisation": mean_recap,
+            "total_recap_to_date": total_recap_to_date,
+            "mean_capital_start": float(np.mean(cap_start)),
+            "mean_capital_end": float(np.mean(cap_end)),
+            "required_capital": rq,
+            "solvency_ratio": solvency,
+            "loss_ratio": loss_ratio,
+            "combined_ratio": combined_ratio,
+            "prob_ruin_to_date": prob_ruin,
+            "prob_recap_to_date": prob_recap,
+            "p05_capital": float(np.quantile(cap_end, 0.05)),
+            "p25_capital": float(np.quantile(cap_end, 0.25)),
+            "p75_capital": float(np.quantile(cap_end, 0.75)),
+            "p95_capital": float(np.quantile(cap_end, 0.95)),
+        })
+
+    return {
+        "opening_capital": opening_capital,
+        "required_capital_yr1": req_cap_yr1,
+        "capital_paths": capital_mat,
+        "gross_loss_mat": gross_loss_mat,
+        "net_loss_mat": net_loss_mat,
+        "gross_prem_mat": gross_prem_mat,
+        "net_prem_mat": net_prem_mat,
+        "ceded_prem_mat": ceded_prem_mat,
+        "ceding_comm_mat": ceding_comm_mat,
+        "reins_recovery_mat": reins_recovery_mat,
+        "uw_mat": uw_mat,
+        "inv_mat": inv_mat,
+        "total_result_mat": total_result_mat,
+        "recap_mat": recap_mat,
+        "summary": pd.DataFrame(rows),
+    }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# G) SCENARIOS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def spike(years, mult, n=N_PROJ):
+    v = np.ones(n)
+    for y in ([years] if not hasattr(years, "__iter__") else years):
+        if 1 <= y <= n:
+            v[y - 1] = mult
+    return v
+
+def make_scenarios(base_rates, gross_growth):
+    ri, pi, ir = base_rates["claims_inf"], base_rates["prem_inf"], base_rates["invest_ret"]
+    gH, gB, gO = gross_growth["H"], gross_growth["B"], gross_growth["O"]
+
+    def s(ci=0, pi_=0, ii=0, dH=0, dB=0, dO=0, mH=None, mB=None, mO=None, wcH=None, wcB=None, wcO=None):
+        return {
+            "growth": {"H": gH + dH, "B": gB + dB, "O": gO + dO},
+            "claims_inf": ri + ci,
+            "prem_inf": pi + pi_,
+            "invest_ret": np.maximum(ir + ii, -0.05),
+            "stress_H": mH if mH is not None else np.ones(N_PROJ),
+            "stress_B": mB if mB is not None else np.ones(N_PROJ),
+            "stress_O": mO if mO is not None else np.ones(N_PROJ),
+            "stress_wc_H": wcH if wcH is not None else np.ones(N_PROJ),
+            "stress_wc_B": wcB if wcB is not None else np.ones(N_PROJ),
+            "stress_wc_O": wcO if wcO is not None else np.ones(N_PROJ),
+        }
+
+    wc_persistent = np.ones(N_PROJ)
+    wc_persistent[WC_STRESS_START_YEAR - 1:] = WC_STRESS_MULT
+
+    return {
+        "Base": s(),
+        "Inflation_Mismatch": s(ci=0.02, pi_=0.005),
+        "Low_Rates": s(ii=-0.02),
+        "Portfolio_Contraction": s(dH=-0.02, dB=-0.02, dO=-0.03),
+        "Helionis_Catastrophe": s(mH=spike(3, 1.6)),
+        "Oryn_Stress": s(dO=-0.02, mO=np.full(N_PROJ, 1.20)),
+        "Solar_Storm": s(mH=spike(4, 1.5), mB=spike(4, 1.5), mO=spike(4, 1.5)),
+        "Equipment_BI_Cascade": s(
+            mH=spike([2, 3], 1.4),
+            mB=spike([2, 3], 1.4),
+            mO=spike([2, 3], 1.4),
+        ),
+        "Workers_Comp_Shock": s(
+            wcH=wc_persistent,
+            wcB=wc_persistent,
+            wcO=wc_persistent,
+        ),
+        "Combined_Severe": s(
+            ci=0.02, pi_=0.005, ii=-0.02,
+            dH=0.01, dB=0.01, dO=-0.01,
+            mH=spike(3, 1.5), mB=spike(3, 1.5), mO=spike(3, 1.3),
+            wcH=wc_persistent,
+            wcB=wc_persistent,
+            wcO=wc_persistent,
+        ),
+        "Reverse_Stress": s(
+            ci=0.01, ii=-0.01,
+            mH=np.full(N_PROJ, 1.40),
+            mB=np.full(N_PROJ, 1.40),
+            mO=np.full(N_PROJ, 1.40),
+            wcH=np.full(N_PROJ, 1.25),
+            wcB=np.full(N_PROJ, 1.25),
+            wcO=np.full(N_PROJ, 1.25),
+        ),
+    }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# H) CHARTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+COLS = {
+    "Base": "#1F4E79",
+    "Inflation_Mismatch": "#C00000",
+    "Low_Rates": "#ED7D31",
+    "Portfolio_Contraction": "#7030A0",
+    "Helionis_Catastrophe": "#E05C5C",
+    "Oryn_Stress": "#548235",
+    "Solar_Storm": "#C9A800",
+    "Equipment_BI_Cascade": "#0070C0",
+    "Workers_Comp_Shock": "#9E480E",
+    "Combined_Severe": "#843C0C",
+    "Reverse_Stress": "#404040",
+}
+
+def dfmt(x, pos=None):
+    if abs(x) >= 1e9:
+        return f"${x/1e9:.1f}B"
+    if abs(x) >= 1e6:
+        return f"${x/1e6:.0f}M"
+    return f"${x:,.0f}"
+
+def pfmt(x, pos=None):
+    return f"{x:.0%}"
+
+def style(ax, title, subtitle=None):
+    ax.set_title(title, fontweight="bold", fontsize=12, pad=10)
+    if subtitle:
+        ax.annotate(subtitle, xy=(0.01, 0.01), xycoords="axes fraction", fontsize=8.5, color="grey")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.grid(alpha=0.25, linewidth=0.7)
+
+def chart1_solvency(cap_summary, out):
+    df = cap_summary[cap_summary["capital_multiple"] == 2.00]
+    fig, ax = plt.subplots(figsize=(13, 6))
+    for scn, grp in df.groupby("scenario"):
+        lw = 2.2 if scn == "Base" else 1.4
+        ax.plot(grp["year"], grp["solvency_ratio"], color=COLS.get(scn, "#888"), linewidth=lw, label=scn, zorder=3 if scn == "Base" else 2)
+    ax.axhline(1.0, color="#333", linestyle="--", linewidth=1.0, zorder=1)
+    ax.yaxis.set_major_formatter(FuncFormatter(pfmt))
+    style(
+        ax,
+        "Chart 1 — Projected Solvency Ratio by Scenario (200% SCR Capital)",
+        "Capital held = 200% of SCR minimum | Dashed = regulatory floor (100%) | Solvency = mean(capital end-of-year) / required capital"
+    )
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Solvency Ratio")
+    ax.legend(fontsize=8.5, ncol=2, loc="upper right")
+    plt.tight_layout()
+    plt.savefig(out, dpi=160, bbox_inches="tight")
+    plt.close()
+
+def chart2_recap_probability(stress_exec, out):
+    df = stress_exec.copy()
+    cap_lbl = {
+        2.00: "200% SCR (Well-capitalised)",
+        1.50: "150% SCR (Adequate)",
+        1.00: "100% SCR (Reg. min)",
+    }
+    cap_clr = {2.00: "#1F4E79", 1.50: "#ED7D31", 1.00: "#C00000"}
+    order = df[df["capital_multiple"] == 1.00].sort_values("Recap_Prob_Y10")["scenario"].tolist()
+    y_pos = np.arange(len(order))
+    bar_h = 0.25
+
+    fig, ax = plt.subplots(figsize=(13, 6.5))
+    for i, (cap, grp) in enumerate(sorted(df.groupby("capital_multiple"), key=lambda x: x[0])):
+        grp = grp.set_index("scenario").loc[order]
+        ax.barh(y_pos + (i - 1) * bar_h, grp["Recap_Prob_Y10"], height=bar_h, color=cap_clr[cap], label=cap_lbl[cap], alpha=0.87)
+
+    ax.axvline(0.05, color="red", linestyle="--", linewidth=1.2)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(order)
+    ax.xaxis.set_major_formatter(FuncFormatter(pfmt))
+    style(
+        ax,
+        "Chart 2 — Probability of Recapitalisation by Year 10",
+        "Red dashed = 5% management tolerance | Recapitalisation = at least one capital injection by year 10"
+    )
+    ax.set_xlabel("Probability of Recapitalisation")
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig(out, dpi=160, bbox_inches="tight")
+    plt.close()
+
+def chart2b_ruin_probability(stress_exec, out):
+    df = stress_exec.copy()
+    cap_lbl = {
+        2.00: "200% SCR (Well-capitalised)",
+        1.50: "150% SCR (Adequate)",
+        1.00: "100% SCR (Reg. min)",
+    }
+    cap_clr = {2.00: "#1F4E79", 1.50: "#ED7D31", 1.00: "#C00000"}
+    order = df[df["capital_multiple"] == 1.00].sort_values("Ruin_Prob_Y10")["scenario"].tolist()
+    y_pos = np.arange(len(order))
+    bar_h = 0.25
+
+    fig, ax = plt.subplots(figsize=(13, 6.5))
+    for i, (cap, grp) in enumerate(sorted(df.groupby("capital_multiple"), key=lambda x: x[0])):
+        grp = grp.set_index("scenario").loc[order]
+        ax.barh(y_pos + (i - 1) * bar_h, grp["Ruin_Prob_Y10"], height=bar_h, color=cap_clr[cap], label=cap_lbl[cap], alpha=0.87)
+
+    ax.axvline(0.05, color="red", linestyle="--", linewidth=1.2)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(order)
+    ax.xaxis.set_major_formatter(FuncFormatter(pfmt))
+    style(
+        ax,
+        "Chart 2B — Residual Probability of Ruin by Year 10",
+        "Red dashed = 5% regulatory tolerance | Ruin = capital still falls to 0 after allowing recapitalisation"
+    )
+    ax.set_xlabel("Residual Probability of Ruin")
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig(out, dpi=160, bbox_inches="tight")
+    plt.close()
+
+def chart3_capital_fan(result_base, out):
+    paths = result_base["capital_paths"]
+    yrs = np.arange(VALUATION_YR, VALUATION_YR + N_PROJ + 1)
+    qts = {p: np.quantile(paths, p / 100, axis=0) for p in [5, 25, 50, 75, 95]}
+    mean_ = np.mean(paths, axis=0)
+    req = [result_base["required_capital_yr1"]] + list(result_base["summary"]["required_capital"])
+
+    fig, ax = plt.subplots(figsize=(13, 6))
+    ax.fill_between(yrs, qts[5], qts[95], color="#DEEAF1", alpha=0.85, label="P5–P95")
+    ax.fill_between(yrs, qts[25], qts[75], color="#9DC3E6", alpha=0.85, label="P25–P75")
+    ax.plot(yrs, mean_, color="#1F4E79", lw=2.2, label="Mean", zorder=3)
+    ax.plot(yrs, qts[50], color="#2E75B6", lw=1.2, linestyle="--", label="Median")
+    ax.plot(yrs[:len(req)], req, color="#C00000", lw=1.2, linestyle=":", label="Required capital")
+    ax.axhline(0, color="#555", linestyle="-", linewidth=0.8, alpha=0.5)
+    ax.yaxis.set_major_formatter(FuncFormatter(dfmt))
+    style(
+        ax,
+        "Chart 3 — Capital Path Distribution (Base, 200% SCR)",
+        "Starting capital = 200% of required SCR | Fan = true distributional spread across paths"
+    )
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Capital")
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig(out, dpi=160, bbox_inches="tight")
+    plt.close()
+
+def chart4_combined_ratio(cap_summary, out):
+    scns = ["Base", "Inflation_Mismatch", "Solar_Storm", "Workers_Comp_Shock", "Combined_Severe"]
+    df = cap_summary[(cap_summary["capital_multiple"] == 1.00) & (cap_summary["scenario"].isin(scns))]
+    fig, ax = plt.subplots(figsize=(13, 6))
+    for scn, grp in df.groupby("scenario"):
+        lw = 2.2 if scn == "Base" else 1.6
+        ax.plot(grp["year"], grp["combined_ratio"], color=COLS.get(scn, "#888"), lw=lw, label=scn)
+    ax.axhline(1.0, color="#333", linestyle="--", lw=1.0)
+    ax.yaxis.set_major_formatter(FuncFormatter(pfmt))
+    style(
+        ax,
+        "Chart 4 — Combined Ratio Projection by Scenario",
+        "Dashed = breakeven (100%) | WC shock is now included explicitly"
+    )
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Combined Ratio")
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig(out, dpi=160, bbox_inches="tight")
+    plt.close()
+
+def chart5_diversification(div_data, out):
+    labels = ["Helionis", "Bayesia", "Oryn Delta", "Undiversified\nTotal", "Diversification\nBenefit", "Diversified\nPortfolio"]
+    vals = [div_data["cap_H"], div_data["cap_B"], div_data["cap_O"], div_data["undiv"], -div_data["benefit"], div_data["div"]]
+    clrs = ["#2E75B6", "#2E75B6", "#2E75B6", "#1F4E79", "#C00000", "#548235"]
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    bars = ax.bar(labels, [v / 1e9 for v in vals], color=clrs, width=0.6)
+    for bar, val in zip(bars, vals):
+        ypos = bar.get_height() + (0.03 if val >= 0 else -0.12)
+        ax.text(bar.get_x() + bar.get_width() / 2, ypos, f"${val/1e9:.2f}B", ha="center", fontsize=9, fontweight="bold")
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f"${x:.1f}B"))
+    pct = div_data["benefit"] / div_data["undiv"] * 100
+    style(
+        ax,
+        "Chart 5 — Diversification Benefit in Required Capital",
+        f"{pct:.1f}% capital reduction from cross-system diversification (VaR 99.5%)"
+    )
+    ax.set_ylabel("Required Capital ($B)")
+    plt.tight_layout()
+    plt.savefig(out, dpi=160, bbox_inches="tight")
+    plt.close()
+
+def chart6_premium_var(premium_tbl, out):
+    lines = premium_tbl["line"].unique()
+    m_cols = {"Expected Loss": "#2E75B6", "VaR 99.5%": "#C00000", "Gross Premium": "#548235"}
+
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    axes = axes.flatten()
+
+    for i, line in enumerate(lines):
+        ax = axes[i]
+        sub = premium_tbl[premium_tbl["line"] == line]
+        x, w = np.arange(len(sub)), 0.26
+        for j, (col, lbl) in enumerate([
+            ("expected_loss", "Expected Loss"),
+            ("var_995", "VaR 99.5%"),
+            ("gross_premium", "Gross Premium"),
+        ]):
+            ax.bar(x + (j - 1) * w, sub[col] / 1e6, width=w, color=m_cols[lbl], label=lbl, alpha=0.87)
+        ax.set_xticks(x)
+        ax.set_xticklabels(sub["solar_system"], rotation=15, ha="right")
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, p: f"${v:.0f}M"))
+        ax.set_title(line, fontweight="bold")
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.grid(axis="y", alpha=0.25)
+        if i == 0:
+            ax.legend(fontsize=9)
+
+    if len(lines) < 4:
+        axes[-1].set_visible(False)
+
+    fig.suptitle(
+        "Chart 6 — Premium vs Expected Loss vs VaR by Line and System\nGross premium = technical premium (market price factor = 1.0)",
+        fontweight="bold",
+        fontsize=12,
+    )
+    plt.tight_layout()
+    plt.savefig(out, dpi=160, bbox_inches="tight")
+    plt.close()
+
+def chart7_heatmap(stress_exec, out):
+    pivot = stress_exec.pivot(index="scenario", columns="capital_multiple", values="Worst_Solvency")
+    order = stress_exec[stress_exec["capital_multiple"] == 1.00].sort_values("Worst_Solvency")["scenario"].tolist()
+    pivot = pivot.loc[order, sorted(pivot.columns, reverse=True)]
+    col_lbl = {
+        2.00: "200% SCR\n(Well-capitalised)",
+        1.50: "150% SCR\n(Adequate)",
+        1.00: "100% SCR\n(Reg. min)",
+    }
+
+    cmap = mcolors.LinearSegmentedColormap.from_list("sol", ["#C00000", "#FF8C00", "#FFEB84", "#A9D18E", "#548235"])
+    norm = mcolors.Normalize(vmin=0.30, vmax=1.50)
+
+    fig, ax = plt.subplots(figsize=(11, 7.5))
+    im = ax.imshow(pivot.values, cmap=cmap, norm=norm, aspect="auto")
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels([col_lbl[c] for c in pivot.columns], fontsize=11)
+    ax.set_yticks(range(len(order)))
+    ax.set_yticklabels(order, fontsize=10)
+    ax.set_xlabel("Capital Target", fontsize=11)
+    ax.set_ylabel("Scenario", fontsize=11)
+
+    for i in range(len(order)):
+        for j in range(len(pivot.columns)):
+            val = pivot.values[i, j]
+            clr = "white" if val < 0.55 else "black"
+            ax.text(j, i, f"{val:.2f}", ha="center", va="center", fontsize=11, color=clr, fontweight="bold")
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.03)
+    cbar.set_label("Solvency Ratio", fontsize=10)
+    cbar.set_ticks([0.30, 0.60, 0.90, 1.20, 1.50])
+    cbar.set_ticklabels(["30%", "60%", "90%", "120%", "150%+"])
+
+    ax.set_title(
+        "Chart 7 — Worst Solvency Ratio Heatmap\nAcross all scenarios and capital target levels | <1.0 = breach",
+        fontweight="bold",
+        fontsize=12,
+        pad=12,
+    )
+    plt.tight_layout()
+    plt.savefig(out, dpi=160, bbox_inches="tight")
+    plt.close()
+
+def chart8_profitability(cashflow_10yr, profitability_value, out):
+    """
+    10-year portfolio profitability chart.
+    Shows Base scenario across capital targets.
+    """
+    df = (
+        cashflow_10yr.merge(
+            profitability_value,
+            on=["scenario", "capital_multiple"],
+            how="left",
+        )
+        .copy()
+    )
+
+    df = df[df["scenario"] == "Base"].sort_values("capital_multiple", ascending=False)
+
+    labels = [CAPITAL_TARGET_LABELS[c] for c in df["capital_multiple"]]
+    x = np.arange(len(labels))
+    w = 0.34
+
+    total_profit = df["total_profit_10yr"].values / 1e9
+    disc_profit = df["discounted_profitability_value"].values / 1e9
+    profit_margin = df["profit_margin_10yr"].values
+
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+    ax2 = ax1.twinx()
+
+    b1 = ax1.bar(x - w / 2, total_profit, width=w, color="#2E75B6", alpha=0.88, label="10-year total profit")
+    b2 = ax1.bar(x + w / 2, disc_profit, width=w, color="#548235", alpha=0.88, label="Discounted profitability value")
+
+    for bar, val in zip(b1, total_profit):
+        ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.03, f"${val:.2f}B", ha="center", va="bottom", fontsize=8)
+
+    for bar, val in zip(b2, disc_profit):
+        ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.03, f"${val:.2f}B", ha="center", va="bottom", fontsize=8)
+
+    ax2.plot(x, profit_margin, color="#C00000", marker="o", linewidth=2, label="Profit margin")
+    ax2.yaxis.set_major_formatter(FuncFormatter(pfmt))
+
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels)
+    ax1.yaxis.set_major_formatter(FuncFormatter(lambda v, p: f"${v:.1f}B"))
+    ax1.set_ylabel("Profit ($B)")
+    ax2.set_ylabel("Profit Margin")
+
+    style(
+        ax1,
+        "Chart 8 — 10-Year Portfolio Profitability (Base Scenario)",
+        "Bars = total and discounted profit | Line = 10-year profit margin"
+    )
+
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=9, loc="upper left")
+
+    plt.tight_layout()
+    plt.savefig(out, dpi=160, bbox_inches="tight")
+    plt.close()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# I) MAIN
+# ══════════════════════════════════════════════════════════════════════════════
+
+def main():
+    print("=" * 70)
+    print("CAPITAL MODEL v6 | SOA 2026 | Cosmic Quarry Mining Corporation")
+    print("v6 fix: explicit Workers Compensation stress plus lapse, reinsurance, and profitability")
+    print("=" * 70)
+
+    print("\n[1] Loading inputs...")
+    data = load_inputs(PATHS)
+    n_sim = len(data["bi_H"])
+    print(f"    N_SIM = {n_sim:,}")
+
+    print("[2] Rate term structure...")
+    base_rates = build_rate_structure(data["rates"])
+    print(f"    Inflation yr1-10: {[f'{r:.2%}' for r in base_rates['claims_inf']]}")
+    print(f"    Discount  yr1-10: {[f'{r:.2%}' for r in base_rates['invest_ret']]}")
+
+    growth_total = {s: (1 + v) ** (1 / N_PROJ) - 1 for s, v in SOLAR_GROWTH_TOTAL.items()}
+    gross_growth = {}
+    growth_summary_rows = []
+    for system_name, total_target in SOLAR_GROWTH_TOTAL.items():
+        net_annual, gross_annual = solve_gross_growth_from_net_target(total_target, LAPSE_RATE, N_PROJ)
+        short_key = "H" if system_name == "Helionis Cluster" else "B" if system_name == "Bayesia System" else "O"
+        gross_growth[short_key] = gross_annual
+
+        achieved_net = (((1 + gross_annual) * (1 - LAPSE_RATE)) ** N_PROJ) - 1
+        growth_summary_rows.append({
+            "system": system_name,
+            "target_total_growth": total_target,
+            "net_annual_growth": net_annual,
+            "gross_annual_growth": gross_annual,
+            "lapse_rate": LAPSE_RATE,
+            "achieved_total_net_growth": achieved_net,
+        })
+
+    growth_summary = pd.DataFrame(growth_summary_rows)
+
+    print("[3] Lapse-adjusted growth calibration...")
+    print(f"    Lapse rate: {LAPSE_RATE:.2%}")
+    print(growth_summary.to_string(index=False))
+
+    # Build separated line losses so WC can be stressed explicitly
+    losses = {
+        "H": data["cargo_H"] + data["equip_H"] + data["wc_H"] + data["bi_H"],
+        "B": data["cargo_B"] + data["equip_B"] + data["wc_B"] + data["bi_B"],
+        "O": data["cargo_O"] + data["equip_O"] + data["wc_O"] + data["bi_O"],
+
+        "wc_H": data["wc_H"],
+        "wc_B": data["wc_B"],
+        "wc_O": data["wc_O"],
+
+        "nonwc_H": data["cargo_H"] + data["equip_H"] + data["bi_H"],
+        "nonwc_B": data["cargo_B"] + data["equip_B"] + data["bi_B"],
+        "nonwc_O": data["cargo_O"] + data["equip_O"] + data["bi_O"],
+    }
+
+    print("[4] Premiums (CoC, market price factor = 1.0)...")
+    prem_rows = []
+    for line, sys_k, arr in [
+        ("Cargo", "Helionis Cluster", data["cargo_H"]),
+        ("Cargo", "Bayesia System", data["cargo_B"]),
+        ("Cargo", "Oryn Delta", data["cargo_O"]),
+        ("Equipment", "Helionis Cluster", data["equip_H"]),
+        ("Equipment", "Bayesia System", data["equip_B"]),
+        ("Equipment", "Oryn Delta", data["equip_O"]),
+        ("Workers Compensation", "Helionis Cluster", data["wc_H"]),
+        ("Workers Compensation", "Bayesia System", data["wc_B"]),
+        ("Workers Compensation", "Oryn Delta", data["wc_O"]),
+        ("Business Interruption", "Helionis Cluster", data["bi_H"]),
+        ("Business Interruption", "Bayesia System", data["bi_B"]),
+        ("Business Interruption", "Oryn Delta", data["bi_O"]),
+    ]:
+        prem_rows.append(calc_premium_coc(arr, line, sys_k))
+
+    premium_tbl = pd.DataFrame(prem_rows)
+    pbs = premium_tbl.groupby("solar_system")["gross_premium"].sum()
+    premiums = {
+        "H": pbs["Helionis Cluster"],
+        "B": pbs["Bayesia System"],
+        "O": pbs["Oryn Delta"],
+    }
+    print(f"    H:{dfmt(premiums['H'])}  B:{dfmt(premiums['B'])}  O:{dfmt(premiums['O'])}")
+
+    cr_check = premium_tbl[["line", "combined_ratio"]].groupby("line").first()
+    print(f"    Combined ratios: {cr_check['combined_ratio'].round(3).to_dict()}")
+
+    print("[5] Diversification benefit...")
+    cap_H = calc_required_capital(losses["H"])
+    cap_B = calc_required_capital(losses["B"])
+    cap_O = calc_required_capital(losses["O"])
+    undiv = cap_H + cap_B + cap_O
+    divd = calc_required_capital(losses["H"] + losses["B"] + losses["O"])
+    bft = undiv - divd
+    div_data = {"cap_H": cap_H, "cap_B": cap_B, "cap_O": cap_O, "undiv": undiv, "div": divd, "benefit": bft}
+    print(f"    Undiversified:{dfmt(undiv)} → Diversified:{dfmt(divd)} → Benefit:{dfmt(bft)} ({bft/undiv:.1%})")
+
+    print("[6] Running scenarios × capital targets...")
+    scenarios = make_scenarios(base_rates, gross_growth)
+    results = {}
+    for scn, s in scenarios.items():
+        for cap in CAPITAL_TARGETS:
+            rates_s = {
+                "claims_inf": s["claims_inf"],
+                "prem_inf": s["prem_inf"],
+                "invest_ret": s["invest_ret"],
+            }
+            results[f"{scn}_cap{cap}"] = run_capital_projection(
+                losses, premiums, s["growth"], rates_s, scn,
+                capital_multiple=cap,
+                stress_H=s["stress_H"],
+                stress_B=s["stress_B"],
+                stress_O=s["stress_O"],
+                stress_wc_H=s["stress_wc_H"],
+                stress_wc_B=s["stress_wc_B"],
+                stress_wc_O=s["stress_wc_O"],
+                lapse_rate=LAPSE_RATE,
+                quota_share=QUOTA_SHARE,
+                ceding_comm=CEDING_COMM,
+            )
+            print(f"    ✓ {scn} @ {cap:.0%}")
+
+    cap_summary = pd.concat([v["summary"] for v in results.values()], ignore_index=True)
+
+    stress_exec = (
+        cap_summary.groupby(["scenario", "capital_multiple"])
+        .apply(lambda g: pd.Series({
+            "EL_Y1": g.loc[g["t"] == 1, "mean_net_loss"].iloc[0],
+            "VaR_Y1": g.loc[g["t"] == 1, "p995_loss"].iloc[0],
+            "EL_Y10": g.loc[g["t"] == g["t"].max(), "mean_net_loss"].iloc[0],
+            "VaR_Y10": g.loc[g["t"] == g["t"].max(), "p995_loss"].iloc[0],
+            "SolvencyRatio_Y1": g.loc[g["t"] == 1, "solvency_ratio"].iloc[0],
+            "SolvencyRatio_Y10": g.loc[g["t"] == g["t"].max(), "solvency_ratio"].iloc[0],
+            "Worst_Solvency": g["solvency_ratio"].min(),
+            "Ruin_Prob_Y10": g["prob_ruin_to_date"].max(),
+            "Recap_Prob_Y10": g["prob_recap_to_date"].max(),
+            "MeanCapital_Y10": g.loc[g["t"] == g["t"].max(), "mean_capital_end"].iloc[0],
+            "MeanRecap_Y10": g["total_recap_to_date"].max(),
+            "Combined_Ratio_Y1": g.loc[g["t"] == 1, "combined_ratio"].iloc[0],
+            "Profit_Y10": g.loc[g["t"] == g["t"].max(), "mean_total_return"].iloc[0],
+        }), include_groups=False)
+        .reset_index()
+    )
+
+    portfolio_view = (
+        cap_summary[cap_summary["year"].isin(REPORT_YEARS)][[
+            "scenario",
+            "capital_multiple",
+            "year",
+            "mean_gross_premium",
+            "mean_ceded_premium",
+            "mean_ceding_commission",
+            "mean_net_premium",
+            "mean_gross_loss",
+            "mean_reinsurance_recovery",
+            "mean_net_loss",
+            "expected_cost",
+            "expected_net_revenue",
+            "mean_invest_income",
+            "expected_total_return",
+            "variance_loss",
+            "variance_net_revenue",
+            "variance_total_return",
+            "p95_loss",
+            "p99_loss",
+            "p995_loss",
+            "tvar_95_loss",
+            "tvar_99_5_loss",
+            "required_capital",
+            "solvency_ratio",
+            "combined_ratio",
+            "prob_recap_to_date",
+            "prob_ruin_to_date",
+        ]]
+        .sort_values(["capital_multiple", "scenario", "year"], ascending=[False, True, True])
+        .reset_index(drop=True)
+    )
+
+    portfolio_view_base_200 = portfolio_view[
+        (portfolio_view["scenario"] == "Base") &
+        (portfolio_view["capital_multiple"] == 2.00)
+    ].copy()
+
+    portfolio_exec_200 = portfolio_view[portfolio_view["capital_multiple"] == 2.00].copy().sort_values(["scenario", "year"])
+
+    cashflow_10yr = (
+        cap_summary.groupby(["scenario", "capital_multiple"])
+        .agg(
+            total_gross_premium=("mean_gross_premium", "sum"),
+            total_ceded_premium=("mean_ceded_premium", "sum"),
+            total_ceding_commission=("mean_ceding_commission", "sum"),
+            total_net_premium=("mean_net_premium", "sum"),
+            total_gross_cost=("mean_gross_loss", "sum"),
+            total_reinsurance_recovery=("mean_reinsurance_recovery", "sum"),
+            total_cost=("mean_net_loss", "sum"),
+            total_net_revenue=("mean_uw_result", "sum"),
+            total_invest_income=("mean_invest_income", "sum"),
+            total_return=("mean_total_return", "sum"),
+            total_dividends=("mean_surplus_dist", "sum"),
+            total_recapitalisation=("mean_recapitalisation", "sum"),
+            ending_capital=("mean_capital_end", "last"),
+            avg_combined_ratio=("combined_ratio", "mean"),
+            worst_solvency=("solvency_ratio", "min"),
+            ruin_prob_y10=("prob_ruin_to_date", "max"),
+            recap_prob_y10=("prob_recap_to_date", "max"),
+        )
+        .reset_index()
+    )
+
+    discount_map = base_rates["cum_disc"]
+    discounted_rows = []
+    for (scenario, capital_multiple), grp in cap_summary.groupby(["scenario", "capital_multiple"]):
+        grp = grp.sort_values("t").copy()
+        disc_profit = 0.0
+        disc_net_revenue = 0.0
+        disc_invest = 0.0
+        for _, row in grp.iterrows():
+            disc = discount_map[int(row["t"]) - 1]
+            disc_profit += row["mean_total_return"] * disc
+            disc_net_revenue += row["mean_uw_result"] * disc
+            disc_invest += row["mean_invest_income"] * disc
+
+        opening_capital = results[f"{scenario}_cap{capital_multiple}"]["opening_capital"]
+        total_gross_premium = grp["mean_gross_premium"].sum()
+        total_net_premium = grp["mean_net_premium"].sum()
+        total_gross_cost = grp["mean_gross_loss"].sum()
+        total_cost = grp["mean_net_loss"].sum()
+        total_reinsurance_recovery = grp["mean_reinsurance_recovery"].sum()
+        total_return = grp["mean_total_return"].sum()
+
+        discounted_rows.append({
+            "scenario": scenario,
+            "capital_multiple": capital_multiple,
+            "opening_capital": opening_capital,
+            "total_gross_premium_10yr": total_gross_premium,
+            "total_net_premium_10yr": total_net_premium,
+            "total_gross_cost_10yr": total_gross_cost,
+            "total_reinsurance_recovery_10yr": total_reinsurance_recovery,
+            "total_cost_10yr": total_cost,
+            "total_net_revenue_10yr": grp["mean_uw_result"].sum(),
+            "total_invest_income_10yr": grp["mean_invest_income"].sum(),
+            "total_profit_10yr": total_return,
+            "discounted_net_revenue_10yr": disc_net_revenue,
+            "discounted_invest_income_10yr": disc_invest,
+            "discounted_profitability_value": disc_profit,
+            "profit_margin_10yr": total_return / total_net_premium if total_net_premium > 0 else np.nan,
+            "return_on_opening_capital": total_return / opening_capital if opening_capital > 0 else np.nan,
+            "discounted_return_on_opening_capital": disc_profit / opening_capital if opening_capital > 0 else np.nan,
+        })
+
+    profitability_value = pd.DataFrame(discounted_rows)
+
+    portfolio_years_exec = (
+        portfolio_view[[
+            "scenario",
+            "capital_multiple",
+            "year",
+            "expected_cost",
+            "expected_net_revenue",
+            "mean_invest_income",
+            "expected_total_return",
+            "variance_loss",
+            "variance_net_revenue",
+            "variance_total_return",
+            "p95_loss",
+            "p99_loss",
+            "p995_loss",
+            "tvar_95_loss",
+            "tvar_99_5_loss",
+            "required_capital",
+            "solvency_ratio",
+            "prob_recap_to_date",
+            "prob_ruin_to_date",
+        ]]
+        .copy()
+        .sort_values(["capital_multiple", "scenario", "year"], ascending=[False, True, True])
+        .reset_index(drop=True)
+    )
+
+    portfolio_years_base_exec = (
+        portfolio_years_exec[portfolio_years_exec["scenario"] == "Base"]
+        .copy()
+        .sort_values(["capital_multiple", "year"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+
+    profitability_exec = (
+        cashflow_10yr.merge(
+            profitability_value,
+            on=["scenario", "capital_multiple"],
+            how="left",
+        )[[
+            "scenario",
+            "capital_multiple",
+            "total_gross_premium",
+            "total_ceded_premium",
+            "total_ceding_commission",
+            "total_net_premium",
+            "total_gross_cost",
+            "total_reinsurance_recovery",
+            "total_cost",
+            "total_net_revenue",
+            "total_invest_income",
+            "total_return",
+            "total_dividends",
+            "total_recapitalisation",
+            "ending_capital",
+            "discounted_profitability_value",
+            "profit_margin_10yr",
+            "return_on_opening_capital",
+            "discounted_return_on_opening_capital",
+            "avg_combined_ratio",
+            "worst_solvency",
+            "recap_prob_y10",
+            "ruin_prob_y10",
+        ]]
+        .copy()
+        .sort_values(["capital_multiple", "scenario"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+
+    profitability_base_exec = (
+        profitability_exec[profitability_exec["scenario"] == "Base"]
+        .copy()
+        .sort_values("capital_multiple", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    print("\n" + "=" * 70)
+    print("BASE SANITY CHECK (200% SCR)")
+    base_200 = cap_summary[(cap_summary["scenario"] == "Base") & (cap_summary["capital_multiple"] == 2.00)]
+    print(base_200[["t", "solvency_ratio", "combined_ratio", "prob_recap_to_date", "prob_ruin_to_date"]].to_string(index=False))
+
+    print("\nPORTFOLIO VIEW | BASE | 200% SCR | YEARS 2176, 2180, 2185")
+    print(
+        portfolio_view_base_200[[
+            "year",
+            "expected_cost",
+            "expected_net_revenue",
+            "mean_invest_income",
+            "expected_total_return",
+            "variance_loss",
+            "p95_loss",
+            "p99_loss",
+            "tvar_99_5_loss",
+            "required_capital",
+            "solvency_ratio",
+        ]].to_string(index=False)
+    )
+
+    print("\n10-YEAR PROFITABILITY VALUE | BASE | 200% SCR")
+    print(
+        profitability_value[
+            (profitability_value["scenario"] == "Base") &
+            (profitability_value["capital_multiple"] == 2.00)
+        ].to_string(index=False)
+    )
+
+    print("\nRECAP PROBABILITIES @ 100% SCR")
+    recap100 = stress_exec[stress_exec["capital_multiple"] == 1.00][["scenario", "Recap_Prob_Y10"]].sort_values("Recap_Prob_Y10", ascending=False)
+    print(recap100.to_string(index=False))
+
+    print("\nRESIDUAL RUIN PROBABILITIES @ 100% SCR")
+    ruin100 = stress_exec[stress_exec["capital_multiple"] == 1.00][["scenario", "Ruin_Prob_Y10"]].sort_values("Ruin_Prob_Y10", ascending=False)
+    print(ruin100.to_string(index=False))
+
+    print("\n[7] Generating charts...")
+    out = Path("/Users/alansteny/Downloads")
+    out.mkdir(exist_ok=True)
+
+    print("\n" + "=" * 70)
+    print("PORTFOLIO YEAR-POINT EXECUTIVE VIEW | BASE SCENARIO")
+    print("Years: 2176, 2180, 2185")
+    print("=" * 70)
+    print(
+        portfolio_years_base_exec[[
+            "capital_multiple",
+            "year",
+            "expected_cost",
+            "expected_net_revenue",
+            "mean_invest_income",
+            "expected_total_return",
+            "variance_loss",
+            "variance_net_revenue",
+            "variance_total_return",
+            "p95_loss",
+            "p99_loss",
+            "tvar_99_5_loss",
+            "required_capital",
+            "solvency_ratio",
+            "prob_recap_to_date",
+            "prob_ruin_to_date",
+        ]].to_string(index=False)
+    )
+
+    print("\n" + "=" * 70)
+    print("10-YEAR PORTFOLIO CASHFLOW / PROFITABILITY | BASE SCENARIO")
+    print("=" * 70)
+    print(
+        profitability_base_exec[[
+            "capital_multiple",
+            "total_gross_premium",
+            "total_ceded_premium",
+            "total_net_premium",
+            "total_gross_cost",
+            "total_reinsurance_recovery",
+            "total_cost",
+            "total_net_revenue",
+            "total_invest_income",
+            "total_return",
+            "total_dividends",
+            "total_recapitalisation",
+            "ending_capital",
+            "discounted_profitability_value",
+            "profit_margin_10yr",
+            "return_on_opening_capital",
+            "discounted_return_on_opening_capital",
+            "avg_combined_ratio",
+            "worst_solvency",
+            "recap_prob_y10",
+            "ruin_prob_y10",
+        ]].to_string(index=False)
+    )
+
+    chart1_solvency(cap_summary, str(out / "c1_solvency_ratio.png"))
+    chart2_recap_probability(stress_exec, str(out / "c2_recapitalisation_probability.png"))
+    chart2b_ruin_probability(stress_exec, str(out / "c2b_residual_ruin_probability.png"))
+    chart3_capital_fan(results["Base_cap2.0"], str(out / "c3_capital_fan.png"))
+    chart4_combined_ratio(cap_summary, str(out / "c4_combined_ratio.png"))
+    chart5_diversification(div_data, str(out / "c5_diversification.png"))
+    chart6_premium_var(premium_tbl, str(out / "c6_premium_var.png"))
+    chart7_heatmap(stress_exec, str(out / "c7_solvency_heatmap.png"))
+    chart8_profitability(cashflow_10yr, profitability_value, str(out / "c8_profitability.png"))
+
+    print("[8] Saving Excel summary...")
+    with pd.ExcelWriter(str(out / "capital_model_summary_v6.xlsx"), engine="openpyxl") as xw:
+        premium_tbl.to_excel(xw, sheet_name="Premium_Table", index=False)
+        cap_summary.to_excel(xw, sheet_name="Capital_Summary", index=False)
+        stress_exec.to_excel(xw, sheet_name="Stress_Exec", index=False)
+
+        portfolio_view.to_excel(xw, sheet_name="Portfolio_Years_Raw", index=False)
+        portfolio_years_exec.to_excel(xw, sheet_name="Portfolio_Years_Exec", index=False)
+        portfolio_years_base_exec.to_excel(xw, sheet_name="Portfolio_Base_Exec", index=False)
+
+        cashflow_10yr.to_excel(xw, sheet_name="Cashflow_10yr_Raw", index=False)
+        profitability_value.to_excel(xw, sheet_name="Profitability_Raw", index=False)
+        profitability_exec.to_excel(xw, sheet_name="Profitability_Exec", index=False)
+        profitability_base_exec.to_excel(xw, sheet_name="Profitability_Base", index=False)
+
+        growth_summary.to_excel(xw, sheet_name="Growth_Lapse_Assumptions", index=False)
+        pd.DataFrame([div_data]).to_excel(xw, sheet_name="Diversification", index=False)
+
+    print("  ✓ capital_model_summary_v6.xlsx")
+    print("\n✓ Done.")
+    return (
+        cap_summary,
+        stress_exec,
+        premium_tbl,
+        results,
+        portfolio_view,
+        cashflow_10yr,
+        profitability_value,
+        growth_summary,
+    )
+
+if __name__ == "__main__":
+    (
+        cap_summary,
+        stress_exec,
+        premium_tbl,
+        results,
+        portfolio_view,
+        cashflow_10yr,
+        profitability_value,
+        growth_summary,
+    ) = main()
