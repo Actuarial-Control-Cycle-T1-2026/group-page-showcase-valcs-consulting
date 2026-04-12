@@ -86,22 +86,3 @@ Exclusions: Galaxy General will not cover any events outside the defined benefit
 While Cargo Loss represents a significant operational risk for Cosmic Quarry Mining Corporation, our analysis indicates that offering cargo loss insurance is not currently commercially viable for Galaxy General. The transport of extremely high-value metals such as gold and platinum creates severe loss potential, requiring substantial capital and resulting in premiums that would likely be unsustainable for the client. Reducing premiums to make coverage affordable is not viable as this would expose the Galaxy General to losses that are not adequately compensated by premium. 
 
 Accordingly, we do not recommend introducing a cargo loss product. However, if the value concentration of transported metals decrease in the future, or if market conditions allow risks to become more diversifiable and predictable, Galaxy General may reconsider offering cargo loss coverage.
-
-___
-
-### Congrats on completing the [2026 SOA Research Challenge](https://www.soa.org/research/opportunities/2026-student-research-case-study-challenge/)!
-
-
-> Now it's time to build your own website to showcase your work.  
-> Creating a website using GitHub Pages is simple and a great way to present your project.
-
-This page is written in Markdown.
-- Click the [assignment link](https://classroom.github.com/a/FxAEmrI0) to accept your assignment.
-
----
-
-> Be creative! You can embed or link your [data](player_data_salaries_2020.csv), [code](sample-data-clean.ipynb), and [images](ACC.png) here.
-
-More information on GitHub Pages can be found [here](https://pages.github.com/).
-
-![](Actuarial.gif)
