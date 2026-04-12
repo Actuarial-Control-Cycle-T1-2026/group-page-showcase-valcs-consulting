@@ -13,6 +13,9 @@ We are members of the actuarial team at Galaxy General Insurance Company, one of
 The reports analysis relied solely on project provided data, key limitations, assumptions, and their impacts are summarised below.
 <img width="801" height="370" alt="image" src="https://github.com/user-attachments/assets/d7c2f2b8-82f7-4435-a7a2-6a1eb491a584" />
 
+The R Code for data cleaning can be accessed below:
+
+
 
 ---
 # Loss frequency and severity modelling
