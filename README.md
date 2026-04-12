@@ -33,6 +33,8 @@ A Negative Binomial GLM was selected as the frequency model across all product l
 
 **Severity Modelling**
 
+A log normal GLM was the chosen severity model for all product lines. Through analysis, it was evident that claim costs were positive and right skewed, with losses scaling multiplicatively rather than implementing fixed shifts, hence making the log normal suitable. This model was well supported by QQ plots of the transformed claims, aligning closely with the theoretical line, alongside residual plots and marginal AIC comparisons ranking log normal above Gamma, Weibull, and Pareto alternatives across all lines.
+
 **Code**
 
 
