@@ -55,6 +55,11 @@ The code for the capital model can be accessed below:
 
 [Capital Modelling](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Capital%20Model%20Code.py)
 
+**Outputs**
+
+The outputs for the above capital model can be accessed below:
+[Capital Model Outputs](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Capital%20Model%20Summary%20Excel%20.xlsx)
+
 ---
 # Risk assessment
 
@@ -75,6 +80,13 @@ Solar system risk profiles are defined by unique stellar and orbital characteris
 
 ---
 # Product Design
+
+**Cargo Loss**
+
+While Cargo Loss represents a significant operational risk for Cosmic Quarry Mining Corporation, our analysis indicates that offering cargo loss insurance is not currently commercially viable for Galaxy General. The transport of extremely high-value metals such as gold and platinum creates severe loss potential, requiring substantial capital and resulting in premiums that would likely be unsustainable for the client. Reducing premiums to make coverage affordable is not viable as this would expose the Galaxy General to losses that are not adequately compensated by premium. 
+
+Accordingly, we do not recommend introducing a cargo loss product. However, if the value concentration of transported metals decrease in the future, or if market conditions allow risks to become more diversifiable and predictable, Galaxy General may reconsider offering cargo loss coverage.
+
 **Equipment Failure**
 
 Coverage trigger: Equipment failure insurance is designed to cover the costs associated with repairing or replacing specific equipment following an unforeseen and sudden physical failure.
@@ -83,8 +95,27 @@ Benefit structure: Galaxy General will pay for the cost to restore the machine t
 
 Exclusions: Galaxy General will not cover any events outside the defined benefit structure, namely any equipment breakdowns resulting from causes that are not sudden and unforeseen.
 
-**Cargo Loss**
+**Workers Compensation**
 
-While Cargo Loss represents a significant operational risk for Cosmic Quarry Mining Corporation, our analysis indicates that offering cargo loss insurance is not currently commercially viable for Galaxy General. The transport of extremely high-value metals such as gold and platinum creates severe loss potential, requiring substantial capital and resulting in premiums that would likely be unsustainable for the client. Reducing premiums to make coverage affordable is not viable as this would expose the Galaxy General to losses that are not adequately compensated by premium. 
+Coverage Trigger: Workers’ Compensation coverage is triggered when Cosmic Quarry employees sustain work-related injuries or illnesses across any operating solar system. Coverage applies to all occupations, employment types, and locations, ensuring broad protection aligned with the social insurance mandate.
 
-Accordingly, we do not recommend introducing a cargo loss product. However, if the value concentration of transported metals decrease in the future, or if market conditions allow risks to become more diversifiable and predictable, Galaxy General may reconsider offering cargo loss coverage.
+Benefit Structure: The policy provides unlimited per-claim coverage with no deductibles or sub-limits, covering medical costs, rehabilitation, and income replacement, with premiums risk-rated per employee and portfolio stop-loss reinsurance applied at extreme loss levels.
+
+Exclusions: Coverage excludes pre-existing conditions, off-duty incidents, intoxication-related injuries, self-inflicted injuries, acts of war, and claims arising within the initial 90-day seasoning period.
+
+**Business Interreuption**
+
+Coverage Trigger: Business Interruption coverage is triggered by operational shutdowns or significant production disruptions, including equipment failure, supply chain interruptions, evacuations, debris field closures, or workforce shortages.
+
+Benefit Structure: The policy indemnifies lost revenue based on operational downtime, with a $1.0M deductible, 14-day waiting period, $15M per-occurrence limit, and $45M annual aggregate, with premiums risk-rated based on operational and system characteristics.
+
+Exclusions: Coverage excludes scheduled maintenance, gradual deterioration, market price changes, pre-existing faults, acts of war, double recovery, claims within the first 90 days, and regulatory or compliance-related penalties.
+
+
+
+
+
+
+
+
+
