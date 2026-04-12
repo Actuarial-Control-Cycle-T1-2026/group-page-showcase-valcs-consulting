@@ -64,6 +64,7 @@ The code for the capital model can be accessed below:
 **Outputs**
 
 The outputs for the above capital model can be accessed below:
+
 [Capital Model Outputs](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Capital%20Model%20Summary%20Excel%20.xlsx)
 
 ---
