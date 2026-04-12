@@ -16,8 +16,11 @@ The reports analysis relied solely on project provided data, key limitations, as
 The R Code for data cleaning can be accessed below:
 
 [Equipment Failure](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Equipement%20Failure%20Data%20Cleaning.R)
+
 [Cargo Loss](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Cargo%20Loss%2001%20-%20Data%20Cleaning.r)
+
 [Business Interruption](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Business%20Interruption%2001_data_cleaning.py)
+
 [Workers' Compensation](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/WC%20-%2001_DataCleaning.R)
 
 
