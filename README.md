@@ -66,8 +66,9 @@ Solar system risk profiles are defined by unique stellar and orbital characteris
 ---
 # Assumptions
 
+<img width="767" height="116" alt="image" src="https://github.com/user-attachments/assets/29326fb7-e592-47cd-8c1d-dea11ac40b75" />
 <img width="811" height="214" alt="image" src="https://github.com/user-attachments/assets/0b75ac51-e81e-4d94-8d37-44f83af9df11" />
-![Uploading image.png…]()
+
 
 
 ---
