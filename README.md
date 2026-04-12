@@ -48,7 +48,7 @@ The R Code for each product line can be accessed below:
 
 [Business Interruption](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Business%20Interruption%2003_model_selection.py)
 
-
+[Worker's Compensation](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/WC%20-%2003_Modelling.R)
 
 ---
 # Capital Modelling
