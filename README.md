@@ -56,8 +56,20 @@ The code for the capital model can be accessed below:
 ---
 # Risk assessment
 
+Solar system risk profiles are defined by unique stellar and orbital characteristics. The Helionis Cluster features irregular gravitational resonances and shifting debris that require periodic satellite repositioning. In contrast, the Bayesia System’s binary stars generate electromagnetic spikes and radiation extremes. Finally, the Oryn Delta presents a low-visibility environment with unpredictable solar flares and an asymmetric asteroid ring, which creates hazardous gravitational gradients for extraction infrastructure.
+
+<img width="813" height="196" alt="image" src="https://github.com/user-attachments/assets/617ac83c-53ad-4d5c-ab15-34973e5ecf92" />
+<img width="811" height="214" alt="image" src="https://github.com/user-attachments/assets/a9a59d2c-4583-4eb1-bc6d-bf28b35d71c4" />
+
+
+
 ---
 # Assumptions
+
+<img width="811" height="214" alt="image" src="https://github.com/user-attachments/assets/0b75ac51-e81e-4d94-8d37-44f83af9df11" />
+![Uploading image.png…]()
+
+
 ---
 # Product Design
 **Equipment Failure**
