@@ -53,6 +53,8 @@ The capital model for Cosmic Quarry’s portfolio is projected across a 2175 - 2
 
 The code for the capital model can be accessed below:
 
+[Capital Modelling](https://github.com/Actuarial-Control-Cycle-T1-2026/group-page-showcase-valcs-consulting/blob/main/Capital%20Model%20Code.py)
+
 ---
 # Risk assessment
 
